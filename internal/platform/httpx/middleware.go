@@ -10,10 +10,11 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/xshubhamg/chore-microservices/internal/platform/apperr"
 	"github.com/xshubhamg/chore-microservices/internal/platform/logging"
 	"github.com/xshubhamg/chore-microservices/internal/platform/observability"
-	"go.opentelemetry.io/otel/trace"
 )
 
 const requestIDLocal = "request_id"

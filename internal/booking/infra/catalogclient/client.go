@@ -7,11 +7,12 @@ import (
 	"errors"
 	"time"
 
+	"google.golang.org/grpc"
+
 	"github.com/xshubhamg/chore-microservices/internal/booking/app"
 	catalogv1 "github.com/xshubhamg/chore-microservices/internal/gen/catalog/v1"
 	"github.com/xshubhamg/chore-microservices/internal/platform/apperr"
 	"github.com/xshubhamg/chore-microservices/internal/platform/grpcx"
-	"google.golang.org/grpc"
 )
 
 type Client struct {

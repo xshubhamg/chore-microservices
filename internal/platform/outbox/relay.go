@@ -185,6 +185,6 @@ func (r *Relay) backoff(attempt int) time.Duration {
 	if delay > float64(r.cfg.MaxBackoff) {
 		delay = float64(r.cfg.MaxBackoff)
 	}
-	jitter := 0.8 + 0.4*rand.Float64()
+	jitter := 0.8 + 0.4*rand.Float64() //nolint:gosec // retry jitter needs cheap randomness, not cryptographic randomness
 	return time.Duration(delay * jitter)
 }

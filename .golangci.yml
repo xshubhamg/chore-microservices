@@ -15,6 +15,11 @@ linters:
     - prealloc
     - unconvert
     - whitespace
+  settings:
+    errcheck:
+      exclude-functions:
+        # WithDetail is a builder: it always returns the receiver and never fails.
+        - (*github.com/xshubhamg/chore-microservices/internal/platform/apperr.Error).WithDetail
   exclusions:
     generated: lax
     rules:

@@ -4,6 +4,7 @@ package grpcx
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"time"
@@ -47,7 +48,7 @@ func (s *Server) Start(context.Context) error {
 
 	s.log.Info("grpc server listening", slog.String("addr", listener.Addr().String()))
 
-	if err := s.server.Serve(listener); err != nil && err != grpc.ErrServerStopped {
+	if err := s.server.Serve(listener); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 		return err
 	}
 	return nil

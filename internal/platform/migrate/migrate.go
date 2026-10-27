@@ -28,7 +28,7 @@ func Up(ctx context.Context, dsn string, fsys fs.FS, dir string, log *slog.Logge
 	}
 
 	db := stdlib.OpenDB(*connCfg)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	if err := db.PingContext(ctx); err != nil {
 		return fmt.Errorf("ping database: %w", err)
@@ -57,6 +57,6 @@ func Up(ctx context.Context, dsn string, fsys fs.FS, dir string, log *slog.Logge
 	if err != nil {
 		return fmt.Errorf("read migration version: %w", err)
 	}
-	log.Info("migrations applied", slog.Uint64("version", uint64(version)), slog.Bool("dirty", dirty))
+	log.Info("migrations applied", slog.Uint64("schema_version", uint64(version)), slog.Bool("dirty", dirty))
 	return nil
 }

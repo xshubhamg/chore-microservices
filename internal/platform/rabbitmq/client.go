@@ -134,7 +134,7 @@ func (c *Client) DeclareTopology(exchange string) error {
 	if err != nil {
 		return err
 	}
-	defer ch.Close()
+	defer func() { _ = ch.Close() }()
 
 	if err := ch.ExchangeDeclare(exchange, amqp.ExchangeTopic, true, false, false, false, nil); err != nil {
 		return fmt.Errorf("declare exchange %s: %w", exchange, err)

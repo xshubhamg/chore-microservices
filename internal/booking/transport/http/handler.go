@@ -8,13 +8,14 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
+	"log/slog"
+
 	"github.com/xshubhamg/chore-microservices/internal/booking/app"
 	"github.com/xshubhamg/chore-microservices/internal/booking/domain"
 	"github.com/xshubhamg/chore-microservices/internal/platform/apperr"
 	"github.com/xshubhamg/chore-microservices/internal/platform/config"
 	"github.com/xshubhamg/chore-microservices/internal/platform/httpx"
 	"github.com/xshubhamg/chore-microservices/internal/platform/idempotency"
-	"log/slog"
 )
 
 const idempotencyTTL = 24 * time.Hour

@@ -86,7 +86,12 @@ func testApp(store idempotency.Store, handler fiber.Handler) *fiber.App {
 	return app
 }
 
-func doRequest(t *testing.T, app *fiber.App, key, body string) (*http.Response, string) {
+type result struct {
+	status int
+	header http.Header
+}
+
+func doRequest(t *testing.T, app *fiber.App, key, body string) (result, string) {
 	t.Helper()
 
 	req := httptest.NewRequest(http.MethodPost, "/bookings", strings.NewReader(body))
@@ -103,7 +108,8 @@ func doRequest(t *testing.T, app *fiber.App, key, body string) (*http.Response, 
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
-	return resp, string(payload)
+	_ = resp.Body.Close()
+	return result{status: resp.StatusCode, header: resp.Header}, string(payload)
 }
 
 func TestWithoutKeyHandlerRunsEveryTime(t *testing.T) {
@@ -115,8 +121,8 @@ func TestWithoutKeyHandlerRunsEveryTime(t *testing.T) {
 	})
 
 	for range 2 {
-		if resp, _ := doRequest(t, app, "", `{"service_id":1}`); resp.StatusCode != fiber.StatusCreated {
-			t.Fatalf("status = %d", resp.StatusCode)
+		if resp, _ := doRequest(t, app, "", `{"service_id":1}`); resp.status != fiber.StatusCreated {
+			t.Fatalf("status = %d", resp.status)
 		}
 	}
 	if calls != 2 {
@@ -133,18 +139,18 @@ func TestReplayReturnsStoredResponse(t *testing.T) {
 	})
 
 	first, firstBody := doRequest(t, app, "key-1", `{"service_id":1}`)
-	if first.StatusCode != fiber.StatusCreated {
-		t.Fatalf("first status = %d", first.StatusCode)
+	if first.status != fiber.StatusCreated {
+		t.Fatalf("first status = %d", first.status)
 	}
 
 	second, secondBody := doRequest(t, app, "key-1", `{"service_id":1}`)
-	if second.StatusCode != fiber.StatusCreated {
-		t.Fatalf("replay status = %d", second.StatusCode)
+	if second.status != fiber.StatusCreated {
+		t.Fatalf("replay status = %d", second.status)
 	}
 	if firstBody != secondBody {
 		t.Errorf("replayed body = %q, want %q", secondBody, firstBody)
 	}
-	if second.Header.Get("Idempotent-Replayed") != "true" {
+	if second.header.Get("Idempotent-Replayed") != "true" {
 		t.Error("replay must be marked with Idempotent-Replayed")
 	}
 	if calls != 1 {
@@ -161,8 +167,8 @@ func TestKeyReuseWithDifferentBodyConflicts(t *testing.T) {
 	doRequest(t, app, "key-2", `{"service_id":1}`)
 	resp, body := doRequest(t, app, "key-2", `{"service_id":2}`)
 
-	if resp.StatusCode != fiber.StatusConflict {
-		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	if resp.status != fiber.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.status)
 	}
 	if !strings.Contains(body, "idempotency_key_reuse") {
 		t.Errorf("body = %s", body)
@@ -178,8 +184,8 @@ func TestInProgressKeyConflicts(t *testing.T) {
 	})
 
 	resp, body := doRequest(t, app, "key-3", `{"service_id":1}`)
-	if resp.StatusCode != fiber.StatusConflict {
-		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	if resp.status != fiber.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.status)
 	}
 	if !strings.Contains(body, "request_in_progress") {
 		t.Errorf("body = %s", body)
@@ -193,8 +199,8 @@ func TestFailedRequestReleasesKey(t *testing.T) {
 	})
 
 	resp, _ := doRequest(t, app, "key-4", `{"service_id":1}`)
-	if resp.StatusCode != fiber.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	if resp.status != fiber.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.status)
 	}
 	if _, exists := store.state("key-4"); exists {
 		t.Error("failed requests must release the idempotency key")
@@ -208,8 +214,8 @@ func TestServerErrorIsNotCached(t *testing.T) {
 	})
 
 	resp, _ := doRequest(t, app, "key-5", `{"service_id":1}`)
-	if resp.StatusCode != fiber.StatusInternalServerError {
-		t.Fatalf("status = %d", resp.StatusCode)
+	if resp.status != fiber.StatusInternalServerError {
+		t.Fatalf("status = %d", resp.status)
 	}
 	if _, exists := store.state("key-5"); exists {
 		t.Error("5xx responses must not be cached")

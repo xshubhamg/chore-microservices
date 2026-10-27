@@ -108,11 +108,7 @@ func (a *App) List(ctx context.Context, q ListQuery) ([]*domain.Service, error) 
 		return nil, apperr.Invalid("invalid_cursor", "cursor must be zero or positive")
 	}
 
-	services, err := a.repo.List(ctx, ListFilter{
-		Active:  q.Active,
-		AfterID: q.AfterID,
-		Limit:   q.Limit,
-	})
+	services, err := a.repo.List(ctx, ListFilter(q))
 	if err != nil {
 		return nil, apperr.Internal(err)
 	}

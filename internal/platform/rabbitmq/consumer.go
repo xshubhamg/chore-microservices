@@ -19,7 +19,7 @@ type ConsumerConfig struct {
 	RoutingKeys   []string
 	Exchange      string
 	Prefetch      int
-	DeliveryLimit int
+	DeliveryLimit int32
 	Handler       func(context.Context, amqp.Delivery) error
 	HandleTimeout time.Duration
 }
@@ -86,7 +86,7 @@ func (c *Consumer) consume(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("open channel: %w", err)
 	}
-	defer ch.Close()
+	defer func() { _ = ch.Close() }()
 
 	if err := c.declare(ch); err != nil {
 		return err
@@ -131,7 +131,7 @@ func (c *Consumer) declare(ch *amqp.Channel) error {
 
 	args := amqp.Table{
 		"x-queue-type":              "quorum",
-		"x-delivery-limit":          int32(c.cfg.DeliveryLimit),
+		"x-delivery-limit":          c.cfg.DeliveryLimit,
 		"x-dead-letter-exchange":    dlx,
 		"x-dead-letter-routing-key": c.cfg.Queue,
 	}

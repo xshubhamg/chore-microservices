@@ -71,20 +71,20 @@ func runService() error {
 	if err != nil {
 		return err
 	}
-	defer catalogConn.Close()
+	defer func() { _ = catalogConn.Close() }()
 
 	broker, err := rabbitmq.Dial(ctx, cfg.AMQP.URL, log)
 	if err != nil {
 		return err
 	}
-	defer broker.Close()
+	defer func() { _ = broker.Close() }()
 
 	if err := broker.DeclareTopology(cfg.AMQP.Exchange); err != nil {
 		return err
 	}
 
 	publisher := rabbitmq.NewPublisher(broker, cfg.AMQP.Exchange, log)
-	defer publisher.Close()
+	defer func() { _ = publisher.Close() }()
 
 	repository := bookingpostgres.New(pool)
 	outboxStore := bookingpostgres.NewOutboxStore(pool)
@@ -93,7 +93,7 @@ func runService() error {
 
 	relay := outbox.NewRelay(outboxStore, eventbus.New(publisher), cfg.Outbox, log, metrics)
 
-	registerOutboxGauges(metrics, outboxStore)
+	registerOutboxGauges(metrics, outboxStore, log)
 
 	checks := health.New()
 	checks.Add("postgres", postgres.Check(pool))
@@ -126,8 +126,8 @@ func runService() error {
 // registerOutboxGauges exposes the operational backlog: pending messages and
 // the age of the oldest one. Alerts fire on age, not count, because a stable
 // backlog is harmless while a stuck relay is not.
-func registerOutboxGauges(metrics *observability.Metrics, store *bookingpostgres.OutboxStore) {
-	metrics.RegisterGaugeFunc("outbox_messages_pending",
+func registerOutboxGauges(metrics *observability.Metrics, store *bookingpostgres.OutboxStore, log *slog.Logger) {
+	if err := metrics.RegisterGaugeFunc("outbox_messages_pending",
 		"Number of outbox messages waiting to be published.",
 		func() float64 {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -137,9 +137,11 @@ func registerOutboxGauges(metrics *observability.Metrics, store *bookingpostgres
 				return 0
 			}
 			return float64(count)
-		})
+		}); err != nil {
+		log.Error("register outbox backlog gauge failed", slog.String("error", err.Error()))
+	}
 
-	metrics.RegisterGaugeFunc("outbox_oldest_pending_seconds",
+	if err := metrics.RegisterGaugeFunc("outbox_oldest_pending_seconds",
 		"Age in seconds of the oldest unpublished outbox message.",
 		func() float64 {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -149,5 +151,7 @@ func registerOutboxGauges(metrics *observability.Metrics, store *bookingpostgres
 				return 0
 			}
 			return age.Seconds()
-		})
+		}); err != nil {
+		log.Error("register outbox age gauge failed", slog.String("error", err.Error()))
+	}
 }

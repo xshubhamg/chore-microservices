@@ -127,8 +127,8 @@ func Load(service string) (Config, error) {
 		},
 		DB: DBConfig{
 			DSN:             l.str("DATABASE_URL", fmt.Sprintf("postgres://chore:chore@localhost:5435/chore_%s?sslmode=disable", service)),
-			MaxConns:        int32(l.integer("DB_MAX_CONNS", 10)),
-			MinConns:        int32(l.integer("DB_MIN_CONNS", 1)),
+			MaxConns:        l.integer32("DB_MAX_CONNS", 10),
+			MinConns:        l.integer32("DB_MIN_CONNS", 1),
 			MaxConnLifetime: l.duration("DB_MAX_CONN_LIFETIME", time.Hour),
 			MaxConnIdleTime: l.duration("DB_MAX_CONN_IDLE_TIME", 15*time.Minute),
 			ConnectTimeout:  l.duration("DB_CONNECT_TIMEOUT", 30*time.Second),
@@ -237,6 +237,21 @@ func (l *loader) integer(key string, fallback int) int {
 		return fallback
 	}
 	return v
+}
+
+// integer32 keeps the conversion inside a bounds-checked parse. This avoids a
+// silent wraparound when an operator sets a value outside the int32 range.
+func (l *loader) integer32(key string, fallback int32) int32 {
+	raw, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fallback
+	}
+	v, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil {
+		l.problems = append(l.problems, fmt.Errorf("%s: %w", key, err))
+		return fallback
+	}
+	return int32(v)
 }
 
 func (l *loader) float(key string, fallback float64) float64 {

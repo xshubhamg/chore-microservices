@@ -164,7 +164,7 @@ func (a *App) List(ctx context.Context, q ListQuery) ([]*domain.Booking, error) 
 			WithDetail("status", string(*q.Status))
 	}
 
-	bookings, err := a.repo.List(ctx, ListFilter{Status: q.Status, AfterID: q.AfterID, Limit: q.Limit})
+	bookings, err := a.repo.List(ctx, ListFilter(q))
 	if err != nil {
 		return nil, apperr.Internal(err)
 	}

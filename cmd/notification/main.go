@@ -70,7 +70,7 @@ func runService() error {
 	if err != nil {
 		return err
 	}
-	defer broker.Close()
+	defer func() { _ = broker.Close() }()
 
 	if err := broker.DeclareTopology(cfg.AMQP.Exchange); err != nil {
 		return err
