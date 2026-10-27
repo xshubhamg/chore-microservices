@@ -1,0 +1,22 @@
+# binaries
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+coverage.html
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# tooling caches
+.air.toml.local
+.tmp/

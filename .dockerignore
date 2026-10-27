@@ -1,0 +1,10 @@
+.git
+.github
+bin
+dist
+coverage.*
+*.md
+docs
+loadtest
+deploy/docker-compose.yml
+deploy/prometheus.yml

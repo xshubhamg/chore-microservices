@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: catalog
+    static_configs:
+      - targets: ["catalog:9090"]
+
+  - job_name: booking
+    static_configs:
+      - targets: ["booking:9090"]
+
+  - job_name: notification
+    static_configs:
+      - targets: ["notification:9090"]
