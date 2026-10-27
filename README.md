@@ -10,6 +10,7 @@
 [![RabbitMQ 4](https://img.shields.io/badge/RabbitMQ-4-FF6600?logo=rabbitmq&logoColor=white)](https://www.rabbitmq.com)
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-traces-425CC7?logo=opentelemetry&logoColor=white)](https://opentelemetry.io)
 [![Docker](https://img.shields.io/badge/Docker-distroless-2496ED?logo=docker&logoColor=white)](deploy/Dockerfile)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 [Quick start](#quick-start) · [Architecture](#architecture) · [API](#api) · [Design decisions](docs/DECISIONS.md) · [Runbook](docs/RUNBOOK.md)
 
@@ -381,6 +382,10 @@ scope:
 
 These are boundaries, not accidents. The reasoning is recorded in
 [docs/DECISIONS.md](docs/DECISIONS.md).
+
+## License
+
+Released under the [MIT License](LICENSE).
 
 <div align="center">
 
