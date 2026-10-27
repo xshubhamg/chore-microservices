@@ -99,7 +99,7 @@ func (s *OutboxStore) Pending(ctx context.Context) (int64, time.Duration, error)
 		oldest *time.Time
 	)
 	err := s.pool.QueryRow(ctx, `
-		SELECT count(*), min(available_at)
+		SELECT count(*), min(created_at)
 		FROM outbox_messages
 		WHERE published_at IS NULL AND failed_at IS NULL
 	`).Scan(&count, &oldest)

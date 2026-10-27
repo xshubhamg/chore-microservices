@@ -181,6 +181,7 @@ outbox_messages(
   payload JSONB,
   trace_parent TEXT,
   attempts INT,
+  created_at TIMESTAMPTZ,
   available_at TIMESTAMPTZ,
   claimed_at TIMESTAMPTZ,
   published_at TIMESTAMPTZ,

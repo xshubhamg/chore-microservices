@@ -212,6 +212,19 @@ func TestOutboxClaimAndPublishLifecycle(t *testing.T) {
 		t.Errorf("attempts = %d, want 1", messages[0].Attempts)
 	}
 
+	// A claimed row is still pending. Its age must come from created_at, not
+	// from available_at (which moves into the future for the lease/retries).
+	pendingCount, age, err := store.Pending(context.Background())
+	if err != nil {
+		t.Fatalf("pending: %v", err)
+	}
+	if pendingCount != 1 {
+		t.Errorf("pending = %d, want 1", pendingCount)
+	}
+	if age < 0 {
+		t.Errorf("oldest pending age = %s, must not be negative", age)
+	}
+
 	// A second relay must not see the leased message.
 	again, err := store.Claim(context.Background(), 10, time.Minute)
 	if err != nil {
