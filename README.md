@@ -45,6 +45,15 @@ the operational documentation to run it.
 
 ## Architecture
 
+<p align="center">
+  <img src="docs/images/architecture.png" alt="Chore Booking Microservices architecture: client to booking service over REST with an Idempotency-Key; booking calls catalog over gRPC; booking and its outbox event commit atomically to Postgres; the outbox relay publishes with confirms to RabbitMQ; the notification consumer deduplicates events and writes to its own Postgres; Prometheus, Jaeger and OpenTelemetry observe every hop." width="100%">
+</p>
+
+<p align="center"><em>Idempotent request → gRPC lookup → atomic write + outbox → publish with confirms → deduplicated consume → notification + audit.</em></p>
+
+<details>
+<summary><b>Text-friendly Mermaid diagram</b></summary>
+
 ```mermaid
 flowchart LR
     client([Client])
@@ -78,6 +87,8 @@ flowchart LR
     b_relay -->|publish + confirm| broker
     broker -->|booking.*| n_consumer
 ```
+
+</details>
 
 The design follows four rules:
 
