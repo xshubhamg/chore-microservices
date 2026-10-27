@@ -1,106 +1,151 @@
+<div align="center">
+
 # Chore Booking Microservices
 
-A small but complete booking platform built the way a production Go service
-should be: explicit boundaries, a transactional outbox instead of
-dual-write bugs, idempotent writes, optimistic concurrency, at-least-once
-messaging with deduplication, and first-class observability.
+**A production-grade booking platform built with Go — designed around the failure paths, not just the happy path.**
 
-It is deliberately scoped to three services. The point is not the number of
-services — it is that every cross-service interaction has a failure mode that
-has been thought through.
+[![CI](https://github.com/xshubhamg/chore-microservices/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/xshubhamg/chore-microservices/actions/workflows/ci.yml)
+[![Go 1.27](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![PostgreSQL 17](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org)
+[![RabbitMQ 4](https://img.shields.io/badge/RabbitMQ-4-FF6600?logo=rabbitmq&logoColor=white)](https://www.rabbitmq.com)
+[![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-traces-425CC7?logo=opentelemetry&logoColor=white)](https://opentelemetry.io)
+[![Docker](https://img.shields.io/badge/Docker-distroless-2496ED?logo=docker&logoColor=white)](deploy/Dockerfile)
 
-```
-            ┌──────────────┐        gRPC (GetService)        ┌──────────────┐
-  client ──▶│   booking    │────────────────────────────────▶│   catalog    │
-            │  REST :3001  │                                  │  REST :3002  │
-            └──────┬───────┘                                  │  gRPC :50051 │
-                   │ booking + outbox (1 tx)                   └──────────────┘
-                   ▼
-            ┌──────────────┐   publish w/ confirms   ┌──────────────┐
-            │  Postgres    │◀──── outbox relay ──────▶│  RabbitMQ    │
-            │  (booking)   │                          │ quorum + DLQ │
-            └──────────────┘                          └──────┬───────┘
-                                                             │ booking.*
-                                                             ▼
-                                                      ┌──────────────┐
-                                                      │ notification │
-                                                      │  dedupe +    │
-                                                      │  audit table │
-                                                      └──────────────┘
-```
+[Quick start](#quick-start) · [Architecture](#architecture) · [API](#api) · [Design decisions](docs/DECISIONS.md) · [Runbook](docs/RUNBOOK.md)
 
-## Table of contents
+</div>
 
-- [Why this project exists](#why-this-project-exists)
-- [Quickstart](#quickstart)
-- [API](#api)
-- [Service boundaries](#service-boundaries)
-- [Reliability model](#reliability-model)
-- [Observability](#observability)
-- [Configuration](#configuration)
-- [Testing](#testing)
-- [Project layout](#project-layout)
-- [Documentation](#documentation)
-- [Known limitations](#known-limitations)
+---
 
-## Why this project exists
+Most microservice demos stop at CRUD and a happy-path request. This one is
+built around the questions that decide whether a distributed system survives
+production:
 
-Most "microservices demo" repositories show happy-path CRUD and call it a day.
-The interesting parts of distributed systems live in the failure paths:
+> What happens if the process dies after `COMMIT` but before the event is
+> published? What if the client retries a booking? What if two writers update
+> the same row? What if the broker is down? What if a message is delivered
+> twice — or never stops failing?
 
-| Failure | This project's answer |
+The answer is a small, complete system with **three services, one owner per
+database, a transactional outbox, idempotent writes, optimistic concurrency,
+at-least-once messaging with deduplication, and end-to-end tracing** — including
+the operational documentation to run it.
+
+## At a glance
+
+| | |
 | --- | --- |
-| Process dies between database commit and broker publish | Transactional outbox; the relay republishes |
-| Relay dies after publish, before marking the row | At-least-once delivery; consumers deduplicate by event ID |
-| Client retries `POST /v1/bookings` after a timeout | `Idempotency-Key` replays the original response |
-| Two writers update the same aggregate | `version` column; stale writes get `409` |
-| Catalog is down while booking is created | gRPC returns `503`, no half-created booking |
-| Catalog price changes after a booking | Booking stores a name/price/duration snapshot |
-| Poison message keeps failing | Quorum queue delivery limit + dead-letter queue |
-| Outbox row fails repeatedly | Exponential backoff with jitter, then dead-letter |
-| Debugging a slow request across services | OTel trace propagated over HTTP, gRPC and AMQP, linked into async events |
-| A deploy breaks liveness | Probes and metrics live on a separate admin port |
+| **Services** | `catalog` · `booking` · `notification` |
+| **Transports** | REST (Fiber), gRPC, AMQP |
+| **Data** | PostgreSQL 17 — database per service |
+| **Messaging** | RabbitMQ 4 — quorum queues, publisher confirms, DLX |
+| **Observability** | `slog`, Prometheus, OpenTelemetry, Jaeger |
+| **Delivery** | At-least-once + idempotent consumers |
+| **Deployment** | Distroless, non-root Docker images · Docker Compose |
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the detailed design and
-[docs/DECISIONS.md](docs/DECISIONS.md) for the trade-offs and rejected
-alternatives.
+## Architecture
 
-## Quickstart
+```mermaid
+flowchart LR
+    client([Client])
 
-Requirements: Docker (with Compose), or Go 1.27+ and Docker for infrastructure.
+    subgraph catalog["catalog"]
+        c_api["REST :3002"]
+        c_grpc["gRPC :50051"]
+        c_db[(chore_catalog)]
+        c_api --> c_db
+        c_grpc --> c_db
+    end
 
-### Full stack
+    subgraph booking["booking"]
+        b_api["REST :3001"]
+        b_relay["outbox relay"]
+        b_db[(chore_booking)]
+        b_api --> b_db
+        b_relay --> b_db
+    end
+
+    broker[(RabbitMQ<br/>chore.events)]
+    subgraph notification["notification"]
+        n_consumer["AMQP consumer"]
+        n_db[(chore_notification)]
+        n_consumer --> n_db
+    end
+
+    client -->|HTTP| c_api
+    client -->|HTTP| b_api
+    b_api -->|gRPC GetService| c_grpc
+    b_relay -->|publish + confirm| broker
+    broker -->|booking.*| n_consumer
+```
+
+The design follows four rules:
+
+1. **One owner per table.** No service reads another service's schema.
+2. **Synchronous only when the caller needs the answer.** Booking needs the
+   catalog price before it writes; notifications are side effects.
+3. **Business code never imports a transport.** `domain` and `app` know nothing
+   about Fiber, gRPC or AMQP.
+4. **The database is the source of truth.** Events are derived from committed
+   state — never from a best-effort publish call.
+
+The detailed component map, request sequences and data model live in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Failure modes, handled
+
+| Failure | Response |
+| --- | --- |
+| Process dies between database commit and broker publish | **Transactional outbox** — the relay republishes |
+| Relay dies after publish, before marking the row | **At-least-once delivery** — consumers deduplicate by event ID |
+| Client retries `POST /v1/bookings` after a timeout | **`Idempotency-Key`** replays the original response |
+| Two writers update the same aggregate | **`version` column** — stale writes get `409` |
+| Catalog is down while a booking is created | gRPC deadline → **`503`**, no half-created booking |
+| Catalog price changes after a booking | Booking stores a **name/price/duration snapshot** |
+| Poison message keeps failing | **Quorum queue delivery limit** → dead-letter queue |
+| Outbox row fails repeatedly | **Exponential backoff with jitter** → dead-letter |
+| Debugging a slow request across services | **OTel trace** over HTTP, gRPC and AMQP, linked into async events |
+| A deploy breaks liveness | Probes and metrics live on a **separate admin port** |
+
+## Quick start
+
+**Requirements:** Docker with Compose. For local Go processes: Go 1.27+.
 
 ```bash
-make up          # build images; starts Postgres, RabbitMQ, 3 services, Jaeger, Prometheus
-make e2e         # run the end-to-end script against the running stack
-make down
+make up     # build images; start Postgres, RabbitMQ, 3 services, Jaeger, Prometheus
+make e2e    # run the full black-box flow against the running stack
+make down   # stop everything
 ```
 
-Endpoints:
+The first `make up` builds three distroless images and may take a few minutes.
 
-| Service | API | Admin (health/metrics) |
+### Endpoints
+
+| Service | API | Admin (health / metrics) |
 | --- | --- | --- |
-| catalog | http://localhost:3002 | http://localhost:9092 |
-| booking | http://localhost:3001 | http://localhost:9091 |
-| notification | — (consumer) | http://localhost:9093 |
-| Jaeger UI | http://localhost:16686 | |
-| Prometheus | http://localhost:9090 | |
-| RabbitMQ management | http://localhost:15672 (`chore` / `chore`) | |
+| **catalog** | http://localhost:3002 | http://localhost:9092 |
+| **booking** | http://localhost:3001 | http://localhost:9091 |
+| **notification** | — (consumer) | http://localhost:9093 |
+| **Jaeger UI** | http://localhost:16686 | |
+| **Prometheus** | http://localhost:9090 | |
+| **RabbitMQ management** | http://localhost:15672 | `chore` / `chore` |
+
+`GET /healthz`, `/readyz`, `/metrics` and `/version` are served by the admin
+listener, never by the public API.
 
 ### Local Go processes
 
 ```bash
-make up-infra    # Postgres on :5435, RabbitMQ on :5672
+make up-infra          # Postgres on :5435, RabbitMQ on :5672
 
-make run-catalog      # terminal 1
-make run-booking      # terminal 2
-make run-notification # terminal 3
+make run-catalog       # terminal 1
+make run-booking       # terminal 2
+make run-notification  # terminal 3
 ```
 
 Migrations are embedded in each binary and applied at startup
 (`DB_AUTO_MIGRATE=true` by default), so there is no separate migration step in
-development.
+development. Run `make help` to see every target.
 
 ### First requests
 
@@ -133,17 +178,19 @@ curl -sS -X POST http://localhost:3001/v1/bookings/1/cancel \
   -H 'Content-Type: application/json' -d '{"reason":"plans changed"}'
 ```
 
-The complete contract, including every error code, is in
+The complete contract — every route, field, status code and error code — is in
 [`api/openapi.yaml`](api/openapi.yaml).
 
 ## API
 
-Base paths:
+| Surface | Path | Protocol |
+| --- | --- | --- |
+| Catalog CRUD | `/v1/services` | REST / JSON |
+| Catalog lookup | `catalog.v1.CatalogService/GetService` | gRPC |
+| Booking lifecycle | `/v1/bookings` | REST / JSON |
 
-- Catalog: `/v1/services` (REST), `catalog.v1.CatalogService` (gRPC)
-- Booking: `/v1/bookings`
-
-Every error uses one envelope:
+Every error uses the same envelope, so clients branch on a stable code instead
+of parsing prose:
 
 ```json
 {
@@ -157,69 +204,55 @@ Every error uses one envelope:
 }
 ```
 
-`code` is stable and machine-readable. `details` is field-level context.
-Unexpected errors become `internal_error`; their cause is logged, never
-returned.
+`request_id` is also returned in `X-Request-ID` and attached to every log line.
+Unexpected errors become `internal_error`; their cause is logged, never returned.
 
-Booking status machine:
+### Booking lifecycle
 
-```
+```text
 pending ──▶ confirmed ──▶ completed
    │            │
    └────────────┴──────▶ cancelled
 ```
 
-Only the transitions shown are legal. Anything else is `409
-invalid_status_transition`.
+Only the transitions shown are legal. Anything else is
+`409 invalid_status_transition`.
 
-`POST /v1/bookings` with an `Idempotency-Key`:
+### Idempotent writes
+
+`POST /v1/bookings` accepts an optional `Idempotency-Key`:
 
 | Situation | Result |
 | --- | --- |
-| First request | Executes; stores status and body for 24h |
+| First request | Executes; stores status and body for 24 h |
 | Replay, same body | Original status/body + `Idempotent-Replayed: true` |
 | Replay, different body | `409 idempotency_key_reuse` |
 | Concurrent duplicate | `409 request_in_progress` |
 | Original returned `5xx` | Key released; a retry executes again |
 
-## Service boundaries
-
-| Service | Owns | Does not |
-| --- | --- | --- |
-| **catalog** | `services` table, service CRUD, gRPC read API | Know about bookings |
-| **booking** | `bookings`, `outbox_messages`, `idempotency_keys` | Read catalog tables directly; send emails |
-| **notification** | `processed_events`, `notifications` audit trail | Mutate bookings; call other services |
-
-One Postgres server hosts three databases (`chore_catalog`, `chore_booking`,
-`chore_notification`). That keeps local setup cheap while still enforcing
-ownership: no service can join across another service's tables.
-
-The booking service snapshots `service_name`, `service_price_cents` and
-`duration_minutes` when a booking is created. A later catalog price change does
-not rewrite history.
+The key is scoped to method + path + body hash, stored in Postgres, and purged by
+a background janitor.
 
 ## Reliability model
 
-**Writes are atomic with their events.** `POST /v1/bookings` inserts the booking
-and the `booking.created` outbox row in one transaction. Either both exist or
+**Writes are atomic with their events.** Creating a booking inserts the row and
+the `booking.created` outbox row in one transaction. Either both exist or
 neither does.
 
-**The relay publishes with confirms.** A message is only marked published after
+**The relay publishes with confirms.** A row is marked published only after
 RabbitMQ acknowledges it. Rows are claimed with `FOR UPDATE SKIP LOCKED` and a
-lease, so multiple relays can run safely and a crashed relay does not strand
-work.
+lease, so relays can scale horizontally and a crashed relay does not strand work.
 
 **Delivery is at-least-once.** If the process dies after publish and before
-`MarkPublished`, the event is published twice. The notification consumer
-records `processed_events.event_id` in the same transaction as the notification
-row, so the duplicate is skipped. Consumers are expected to be idempotent; the
-broker is not expected to be exactly-once.
+`MarkPublished`, the event is published twice. The notification consumer writes
+`processed_events.event_id` in the same transaction as the notification row, so
+the duplicate is skipped. Consumers are expected to be idempotent; the broker is
+not expected to be exactly-once.
 
 **Failures are bounded.** Outbox publishes retry with exponential backoff and
 jitter, then move to `failed_at` after `OUTBOX_MAX_ATTEMPTS`. Consumer failures
-nack with requeue until `x-delivery-limit`, then route to a dead-letter queue.
-Permanent errors (invalid payload, unsupported event) are dead-lettered
-immediately.
+re-queue until `x-delivery-limit`, then route to a dead-letter queue. Permanent
+errors are dead-lettered immediately.
 
 **Concurrency is explicit.** Catalog and booking updates use a `version`
 column. A stale `UPDATE ... WHERE version = $n` affects zero rows and becomes
@@ -227,28 +260,62 @@ column. A stale `UPDATE ... WHERE version = $n` affects zero rows and becomes
 
 ## Observability
 
-- **Structured logs** (`slog`) with `service`, `env`, `version`, `request_id`,
-  `trace_id` and `span_id`. One access-log line per request.
-- **Prometheus** on the admin port: `chore_http_requests_total`,
-  `chore_http_request_duration_seconds`, `chore_grpc_requests_total`,
-  `chore_events_published_total`, `chore_events_consumed_total`,
-  `chore_event_handle_duration_seconds`,
-  `chore_outbox_publish_duration_seconds`, plus `chore_outbox_messages_pending`
-  and `chore_outbox_oldest_pending_seconds` gauges.
+- **Structured logs** with `service`, `env`, `version`, `request_id`, `trace_id`
+  and `span_id`. One access-log line per request.
+- **Prometheus** RED metrics for HTTP and gRPC, event publish/consume counters
+  by outcome, handler latency, and outbox backlog count and age.
 - **OpenTelemetry** traces across HTTP → gRPC → Postgres → outbox → AMQP →
-  consumer. The outbox stores the `traceparent` at write time, so the relay's
+  consumer. The outbox stores `traceparent` at write time, so the relay's
   publish span is *linked* to the original request instead of pretending to be
   its child. Jaeger is included in Compose.
 - **Health**: `/healthz` (liveness), `/readyz` (Postgres + RabbitMQ), `/version`
-  and `/metrics`, all on the admin port so they are not exposed with the public
-  API.
-- **Graceful shutdown**: SIGINT/SIGTERM stop the HTTP server, consumer and relay
-  within `SHUTDOWN_TIMEOUT`; in-flight requests are drained.
+  and `/metrics`, all on the admin port.
+- **Graceful shutdown**: SIGINT/SIGTERM drain HTTP requests, the consumer and
+  the relay within `SHUTDOWN_TIMEOUT`.
+
+## Testing
+
+| Command | What it proves |
+| --- | --- |
+| `make test` | Unit tests with the race detector |
+| `make test-integration` | Real Postgres: atomic writes, optimistic locking, outbox lifecycle |
+| `make cover` | Coverage profile and total |
+| `make e2e` | Full black-box flow against a running stack |
+| `make lint` | `golangci-lint` |
+
+The e2e script exercises the real paths, not mocks: catalog write, gRPC lookup,
+booking + outbox transaction, idempotent replay, confirmation/cancellation,
+invalid transition, unknown service, and asynchronous notification delivery.
+
+## Project layout
+
+```text
+cmd/{catalog,booking,notification}   composition roots only
+internal/<service>/domain            entities, invariants, status machine
+internal/<service>/app               use cases and ports (interfaces)
+internal/<service>/postgres          adapters + embedded migrations
+internal/<service>/transport         HTTP / gRPC / AMQP adapters
+internal/<service>/infra             outbound adapters (gRPC client, publisher)
+internal/platform/...                shared infrastructure
+internal/gen/...                     generated protobuf (do not edit)
+api/openapi.yaml                     public HTTP contract
+deploy/                              Dockerfile, Compose, Prometheus, DB init
+docs/                                architecture, decisions, runbook
+proto/                               gRPC contracts
+scripts/e2e.sh                       black-box smoke test
+```
+
+Dependencies point inwards: **transport → app → domain**. The domain imports no
+framework, database driver or broker library. `platform` packages are shared
+infrastructure, not a business-logic dumping ground.
 
 ## Configuration
 
 Everything is environment-driven; the same binary runs locally, in CI and in
 production. Defaults match the Compose stack.
+
+<details>
+<summary><b>Full configuration reference</b></summary>
 
 | Variable | Default | Notes |
 | --- | --- | --- |
@@ -274,69 +341,38 @@ production. Defaults match the Compose stack.
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | empty (off) | e.g. `jaeger:4317` |
 | `OTEL_SAMPLE_RATIO` | `1` | 0–1 |
 
+</details>
+
 See [`.env.example`](.env.example) for a ready-to-source local file.
-
-## Testing
-
-```bash
-make test              # unit tests with -race
-make test-integration  # Postgres-backed repository tests (needs `make up-infra`)
-make cover             # coverage profile + total
-make e2e               # black-box HTTP flow against a running stack
-make lint              # golangci-lint
-```
-
-The e2e script exercises the real paths, not mocks: catalog write, gRPC lookup,
-booking + outbox transaction, idempotent replay, confirmation/cancellation,
-invalid transition, unknown service, and async notification delivery.
-
-Unit tests cover the domain invariants, idempotency middleware contract,
-outbox retry/backoff behavior and the shared error translator. Integration
-tests assert that booking and outbox rows are written atomically and that
-optimistic locking rejects stale writers.
-
-## Project layout
-
-```
-cmd/{catalog,booking,notification}   composition roots only
-internal/<service>/domain            entities, invariants, status machine
-internal/<service>/app               use cases, ports (interfaces)
-internal/<service>/postgres          adapters + embedded migrations
-internal/<service>/transport         HTTP / gRPC / AMQP adapters
-internal/<service>/infra             outbound adapters (gRPC client, publisher)
-internal/platform/...                shared infrastructure
-internal/gen/...                     generated protobuf (do not edit)
-api/openapi.yaml                     public HTTP contract
-deploy/                              Dockerfile, Compose, Prometheus, DB init
-docs/                                architecture, decisions, runbook
-proto/                               gRPC contracts
-scripts/e2e.sh                       black-box smoke test
-```
-
-Dependencies point inwards: transport → app → domain. The domain imports no
-framework, database driver or broker library. `platform` packages are
-infrastructure shared by services, not a business-logic dumping ground.
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) — components, sequences, data model
-- [Decisions](docs/DECISIONS.md) — why outbox, why at-least-once, why keyset
-  pagination, and what was deliberately left out
-- [Runbook](docs/RUNBOOK.md) — alerts, diagnosis, DLQ replay, recovery
+| Document | Contents |
+| --- | --- |
+| [Architecture](docs/ARCHITECTURE.md) | Components, sequences, data model, transaction boundaries |
+| [Design decisions](docs/DECISIONS.md) | 15 ADRs: outbox, at-least-once, keyset pagination, rejected alternatives |
+| [Runbook](docs/RUNBOOK.md) | Alerts, outbox diagnosis, DLQ replay, recovery |
+| [OpenAPI](api/openapi.yaml) | The complete public HTTP contract |
 
 ## Known limitations
 
-This is a complete engineering sample, not a finished SaaS. Intentionally out
-of scope:
+This is a complete engineering sample, not a finished SaaS. Intentionally out of
+scope:
 
-- Authentication/authorization. The API is open; in production, terminate auth
-  at the gateway or add JWT middleware.
-- Payments, provider assignment and scheduling conflict detection.
-- Multi-region deployment, sharding and read replicas.
-- A real email/SMS provider — `LogSender` writes notifications to the log and
-  the audit table.
-- Service mesh, Kubernetes manifests and autoscaling. The binary is 12-factor
-  and distroless, so it drops into any orchestrator.
+- **Authentication / authorization** — the API is open; terminate auth at the
+  gateway or add JWT middleware before exposing it.
+- **Payments, provider assignment, scheduling conflict detection.**
+- **Multi-region deployment, sharding and read replicas.**
+- **A real email/SMS provider** — `LogSender` writes to the log and the audit
+  table.
+- **Service mesh, Kubernetes manifests and autoscaling** — the binary is
+  12-factor and distroless, so it drops into any orchestrator.
 
-These are boundaries, not accidents. See
-[docs/DECISIONS.md](docs/DECISIONS.md) for the reasoning.
+These are boundaries, not accidents. The reasoning is recorded in
+[docs/DECISIONS.md](docs/DECISIONS.md).
+
+<div align="center">
+
+**[Back to top](#chore-booking-microservices)**
+
+</div>
