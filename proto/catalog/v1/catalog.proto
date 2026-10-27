@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package catalog.v1;
+
+option go_package = "github.com/xshubhamg/chore-microservices/internal/gen/catalog/v1;catalogv1";
+
+// CatalogService exposes read-only access to the chore catalogue. The booking
+// service calls it before persisting a booking so the booking keeps a price and
+// duration snapshot of the service at the time of purchase.
+service CatalogService {
+  rpc GetService(GetServiceRequest) returns (GetServiceResponse);
+}
+
+message Service {
+  int64 id = 1;
+  string name = 2;
+  string description = 3;
+  string category = 4;
+  int64 price_cents = 5;
+  int32 duration_minutes = 6;
+  bool active = 7;
+}
+
+message GetServiceRequest {
+  int64 id = 1;
+}
+
+message GetServiceResponse {
+  Service service = 1;
+}
