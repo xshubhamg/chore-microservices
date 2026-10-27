@@ -1,0 +1,483 @@
+openapi: 3.1.0
+
+info:
+  title: Chore Booking API
+  version: 1.0.0
+  description: |
+    HTTP contract for the public catalog and booking services.
+
+    All responses are JSON. Errors share a single envelope:
+
+    ```json
+    {
+      "error": {
+        "code": "invalid_status_transition",
+        "message": "booking cannot move from cancelled to cancelled",
+        "details": { "from": "cancelled", "to": "cancelled" },
+        "request_id": "0f1c...",
+        "trace_id": "4bf92f..."
+      }
+    }
+    ```
+
+    `request_id` is also returned in the `X-Request-ID` response header and in
+    logs. `trace_id` is present when distributed tracing is enabled.
+
+    Booking creation is idempotent when the caller supplies an
+    `Idempotency-Key` header. Replaying a key returns the original status and
+    body with `Idempotent-Replayed: true`.
+servers:
+  - url: http://localhost:3002
+    description: Catalog (local)
+  - url: http://localhost:3001
+    description: Booking (local)
+  - url: https://api.example.com
+    description: Production
+
+tags:
+  - name: Catalog
+  - name: Bookings
+
+paths:
+  /v1/services:
+    post:
+      tags: [Catalog]
+      operationId: createService
+      summary: Create a catalog service
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServiceWrite' }
+      responses:
+        '201':
+          description: Created
+          headers:
+            Location:
+              schema: { type: string, example: /v1/services/42 }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409':
+          description: An active service with the same name already exists
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/Internal' }
+    get:
+      tags: [Catalog]
+      operationId: listServices
+      summary: List catalog services
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+        - name: active
+          in: query
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceListEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+  /v1/services/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ServiceID'
+    get:
+      tags: [Catalog]
+      operationId: getService
+      summary: Fetch one catalog service
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Internal' }
+    put:
+      tags: [Catalog]
+      operationId: updateService
+      summary: Replace a catalog service
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServiceWrite' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Concurrent modification or duplicate active name
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+  /v1/services/{id}/active:
+    parameters:
+      - $ref: '#/components/parameters/ServiceID'
+    put:
+      tags: [Catalog]
+      operationId: setServiceActive
+      summary: Activate or deactivate a service (soft delete)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [active]
+              properties:
+                active: { type: boolean }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Concurrent modification
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+  /v1/bookings:
+    post:
+      tags: [Bookings]
+      operationId: createBooking
+      summary: Create a booking
+      description: |
+        The booking service calls the catalog over gRPC and snapshots the
+        service name, price and duration. The booking and its `booking.created`
+        event are committed in one database transaction (transactional outbox).
+
+        Supply `Idempotency-Key` to make retries safe. The key is scoped to the
+        request path and body hash and is retained for 24 hours.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BookingCreate' }
+      responses:
+        '201':
+          description: Created (or replayed)
+          headers:
+            Location:
+              schema: { type: string, example: /v1/bookings/7 }
+            Idempotent-Replayed:
+              description: Present and `true` when the stored response was replayed.
+              schema: { type: string, enum: ['true'] }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BookingEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404':
+          description: Catalog service does not exist
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '409':
+          description: Idempotency-Key reused with a different body, or request still in progress
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: Catalog service unavailable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '500': { $ref: '#/components/responses/Internal' }
+    get:
+      tags: [Bookings]
+      operationId: listBookings
+      summary: List bookings
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/BookingStatus' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BookingListEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+  /v1/bookings/{id}:
+    parameters:
+      - $ref: '#/components/parameters/BookingID'
+    get:
+      tags: [Bookings]
+      operationId: getBooking
+      summary: Fetch one booking
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BookingEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+  /v1/bookings/{id}/confirm:
+    parameters:
+      - $ref: '#/components/parameters/BookingID'
+    post:
+      tags: [Bookings]
+      operationId: confirmBooking
+      summary: Confirm a pending booking
+      responses:
+        '200':
+          description: Confirmed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BookingEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+  /v1/bookings/{id}/complete:
+    parameters:
+      - $ref: '#/components/parameters/BookingID'
+    post:
+      tags: [Bookings]
+      operationId: completeBooking
+      summary: Mark a confirmed booking as completed
+      responses:
+        '200':
+          description: Completed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BookingEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+  /v1/bookings/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/BookingID'
+    post:
+      tags: [Bookings]
+      operationId: cancelBooking
+      summary: Cancel a pending or confirmed booking
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  maxLength: 500
+      responses:
+        '200':
+          description: Cancelled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BookingEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+components:
+  parameters:
+    ServiceID:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+    BookingID:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+    Limit:
+      name: limit
+      in: query
+      description: Page size. Defaults to 20.
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    After:
+      name: after
+      in: query
+      description: Keyset cursor; return rows with an ID greater than this value.
+      schema: { type: integer, format: int64, minimum: 0 }
+
+  schemas:
+    ServiceWrite:
+      type: object
+      required: [name, category, price_cents, duration_minutes]
+      properties:
+        name: { type: string, minLength: 3, maxLength: 120 }
+        description: { type: string, maxLength: 1000 }
+        category:
+          type: string
+          enum: [cleaning, plumbing, electrical, gardening, handyman, moving, painting]
+        price_cents: { type: integer, format: int64, minimum: 0, maximum: 10000000 }
+        duration_minutes: { type: integer, format: int32, minimum: 15, maximum: 1440 }
+
+    Service:
+      allOf:
+        - $ref: '#/components/schemas/ServiceWrite'
+        - type: object
+          required: [id, active, version, created_at, updated_at]
+          properties:
+            id: { type: integer, format: int64 }
+            active: { type: boolean }
+            version: { type: integer, minimum: 1 }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+
+    ServiceEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/Service' }
+
+    ServiceListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Service' }
+        next_cursor:
+          type: string
+          description: Pass as `after` to fetch the next page; absent on the last page.
+
+    BookingStatus:
+      type: string
+      enum: [pending, confirmed, completed, cancelled]
+
+    BookingCreate:
+      type: object
+      required: [service_id, customer_name, customer_email, scheduled_at]
+      properties:
+        service_id: { type: integer, format: int64, minimum: 1 }
+        customer_name: { type: string, minLength: 2, maxLength: 100 }
+        customer_email: { type: string, format: email }
+        scheduled_at:
+          type: string
+          format: date-time
+          description: At least 15 minutes ahead and within 365 days.
+
+    Booking:
+      type: object
+      required:
+        - id
+        - service_id
+        - service_name
+        - service_price_cents
+        - duration_minutes
+        - customer_name
+        - customer_email
+        - scheduled_at
+        - status
+        - version
+        - created_at
+        - updated_at
+      properties:
+        id: { type: integer, format: int64 }
+        service_id: { type: integer, format: int64 }
+        service_name: { type: string, readOnly: true }
+        service_price_cents: { type: integer, format: int64, readOnly: true }
+        duration_minutes: { type: integer, format: int32, readOnly: true }
+        customer_name: { type: string }
+        customer_email: { type: string, format: email }
+        scheduled_at: { type: string, format: date-time }
+        status: { $ref: '#/components/schemas/BookingStatus' }
+        cancellation_reason: { type: string }
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    BookingEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/Booking' }
+
+    BookingListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Booking' }
+        next_cursor: { type: string }
+
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+              example: invalid_status_transition
+            message:
+              type: string
+              description: Human-readable, safe to display.
+            details:
+              type: object
+              additionalProperties: { type: string }
+              description: Field-level context, keyed by field name.
+            request_id: { type: string }
+            trace_id: { type: string }
+
+  responses:
+    BadRequest:
+      description: Validation failed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    InvalidTransition:
+      description: The requested status transition is not allowed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    RateLimited:
+      description: Per-IP rate limit exceeded
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Internal:
+      description: Unexpected server error (details are logged, never returned)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
